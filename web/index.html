@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nautilus Terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; height: 100vh; display: flex; flex-direction: column; }
+
+        /* Auth Panel */
+        #auth-panel {
+            display: flex; align-items: center; justify-content: center;
+            height: 100vh; flex-direction: column; gap: 16px;
+        }
+        #auth-panel h1 { font-size: 2rem; color: #00d4aa; margin-bottom: 8px; }
+        #auth-panel p { color: #888; margin-bottom: 16px; }
+        #auth-panel input {
+            width: 400px; padding: 12px 16px; border-radius: 8px;
+            border: 1px solid #333; background: #16213e; color: #eee;
+            font-size: 14px; font-family: monospace;
+        }
+        #auth-panel input:focus { outline: none; border-color: #00d4aa; }
+        #auth-panel button {
+            padding: 12px 32px; border-radius: 8px; border: none;
+            background: #00d4aa; color: #1a1a2e; font-weight: 600;
+            font-size: 14px; cursor: pointer; transition: background 0.2s;
+        }
+        #auth-panel button:hover { background: #00f5c4; }
+        #auth-error { color: #ff6b6b; font-size: 13px; min-height: 20px; }
+
+        /* Terminal Panel */
+        #terminal-panel { display: none; flex-direction: column; height: 100vh; }
+
+        /* Toolbar */
+        #toolbar {
+            display: flex; align-items: center; gap: 12px;
+            padding: 8px 16px; background: #16213e; border-bottom: 1px solid #333;
+            flex-shrink: 0;
+        }
+        #toolbar select, #toolbar button {
+            padding: 6px 12px; border-radius: 6px; border: 1px solid #333;
+            background: #1a1a2e; color: #eee; font-size: 13px; cursor: pointer;
+        }
+        #toolbar button { border-color: #00d4aa; color: #00d4aa; }
+        #toolbar button:hover { background: #00d4aa; color: #1a1a2e; }
+        #toolbar .spacer { flex: 1; }
+        #toolbar .status { font-size: 12px; color: #888; }
+        #toolbar .status.connected { color: #00d4aa; }
+        #toolbar .status.disconnected { color: #ff6b6b; }
+
+        /* Sessions dropdown */
+        #sessions-list {
+            display: none; position: absolute; top: 44px; right: 16px;
+            background: #16213e; border: 1px solid #333; border-radius: 8px;
+            padding: 8px 0; min-width: 280px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        #sessions-list .session-item {
+            padding: 8px 16px; cursor: pointer; font-size: 13px;
+            display: flex; justify-content: space-between;
+        }
+        #sessions-list .session-item:hover { background: #1a1a2e; }
+        #sessions-list .session-item .cmd { color: #00d4aa; }
+        #sessions-list .session-item .time { color: #666; font-size: 11px; }
+        #sessions-list .empty { padding: 12px 16px; color: #666; font-size: 13px; }
+
+        /* Terminal container */
+        #terminal-container { flex: 1; padding: 4px; overflow: hidden; }
+    </style>
+</head>
+<body>
+    <!-- Auth Panel -->
+    <div id="auth-panel">
+        <h1>Nautilus</h1>
+        <p>Remote CLI Terminal</p>
+        <input type="password" id="token-input" placeholder="Enter JWT token..." autofocus>
+        <button id="connect-btn" onclick="connect()">Connect</button>
+        <div id="auth-error"></div>
+    </div>
+
+    <!-- Terminal Panel -->
+    <div id="terminal-panel">
+        <div id="toolbar">
+            <select id="cmd-select">
+                <option value="bash">bash</option>
+                <option value="zsh">zsh</option>
+                <option value="claude">claude</option>
+                <option value="codex">codex</option>
+            </select>
+            <button onclick="createSession()">New Session</button>
+            <button onclick="toggleSessions()">Sessions</button>
+            <div class="spacer"></div>
+            <span id="status" class="status disconnected">disconnected</span>
+        </div>
+        <div id="sessions-list"></div>
+        <div id="terminal-container"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.min.js"></script>
+    <script>
+    let ws = null;
+    let term = null;
+    let fitAddon = null;
+    let currentSessionId = null;
+    let token = '';
+    let resizeTimeout = null;
+
+    // Enter key on token input
+    document.getElementById('token-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') connect();
+    });
+
+    function connect() {
+        token = document.getElementById('token-input').value.trim();
+        if (!token) {
+            showAuthError('Please enter a token');
+            return;
+        }
+
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
+
+        try {
+            ws = new WebSocket(url);
+        } catch (e) {
+            showAuthError('Failed to connect');
+            return;
+        }
+
+        ws.onopen = () => {
+            showAuthError('');
+            document.getElementById('auth-panel').style.display = 'none';
+            document.getElementById('terminal-panel').style.display = 'flex';
+            setStatus('connected');
+            initTerminal();
+        };
+
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            handleMessage(msg);
+        };
+
+        ws.onclose = () => {
+            setStatus('disconnected');
+            if (term) {
+                term.writeln('\r\n\x1b[31m[Connection lost]\x1b[0m');
+            }
+        };
+
+        ws.onerror = () => {
+            showAuthError('Connection failed — check your token');
+        };
+    }
+
+    function reconnect() {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
+
+        ws = new WebSocket(url);
+        ws.onopen = () => {
+            setStatus('connected');
+            if (term) term.writeln('\r\n\x1b[32m[Reconnected]\x1b[0m');
+            if (currentSessionId) {
+                send({ type: 'session.attach', session_id: currentSessionId });
+            }
+        };
+        ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
+        ws.onclose = () => {
+            setStatus('disconnected');
+            setTimeout(reconnect, 3000);
+        };
+    }
+
+    function initTerminal() {
+        term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+            theme: {
+                background: '#1a1a2e',
+                foreground: '#eee',
+                cursor: '#00d4aa',
+                selectionBackground: '#33475b',
+            },
+        });
+
+        fitAddon = new FitAddon.FitAddon();
+        const webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+        term.loadAddon(fitAddon);
+        term.loadAddon(webLinksAddon);
+        term.open(document.getElementById('terminal-container'));
+        fitAddon.fit();
+
+        term.onData((data) => {
+            if (currentSessionId && ws && ws.readyState === WebSocket.OPEN) {
+                send({ type: 'session.input', session_id: currentSessionId, data: data });
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                fitAddon.fit();
+                if (currentSessionId && ws && ws.readyState === WebSocket.OPEN) {
+                    send({
+                        type: 'session.resize',
+                        session_id: currentSessionId,
+                        cols: term.cols,
+                        rows: term.rows,
+                    });
+                }
+            }, 150);
+        });
+
+        term.writeln('\x1b[36mNautilus Terminal\x1b[0m');
+        term.writeln('Select a command and click "New Session" to start.\r\n');
+    }
+
+    function handleMessage(msg) {
+        switch (msg.type) {
+            case 'session.created':
+                currentSessionId = msg.session_id;
+                term.clear();
+                term.focus();
+                sendResize();
+                break;
+
+            case 'session.attached':
+                currentSessionId = msg.session_id;
+                term.clear();
+                if (msg.replay) term.write(msg.replay);
+                term.focus();
+                sendResize();
+                break;
+
+            case 'session.output':
+                if (msg.session_id === currentSessionId) {
+                    term.write(msg.data);
+                }
+                break;
+
+            case 'session.exit':
+                if (msg.session_id === currentSessionId) {
+                    term.writeln(`\r\n\x1b[33m[Process exited with code ${msg.code}]\x1b[0m`);
+                    currentSessionId = null;
+                }
+                break;
+
+            case 'session.list':
+                renderSessionList(msg.sessions);
+                break;
+
+            case 'error':
+                if (term) {
+                    term.writeln(`\r\n\x1b[31m[Error: ${msg.message}]\x1b[0m`);
+                } else {
+                    showAuthError(msg.message);
+                }
+                break;
+        }
+    }
+
+    function createSession() {
+        const cmd = document.getElementById('cmd-select').value;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        send({
+            type: 'session.create',
+            command: cmd,
+            args: [],
+            env: {},
+            cols: term ? term.cols : 120,
+            rows: term ? term.rows : 40,
+        });
+    }
+
+    function toggleSessions() {
+        const list = document.getElementById('sessions-list');
+        if (list.style.display === 'block') {
+            list.style.display = 'none';
+        } else {
+            send({ type: 'session.list' });
+            list.style.display = 'block';
+        }
+    }
+
+    function renderSessionList(sessions) {
+        const list = document.getElementById('sessions-list');
+        if (!sessions || sessions.length === 0) {
+            list.innerHTML = '<div class="empty">No active sessions</div>';
+            return;
+        }
+        list.innerHTML = sessions.map(s => {
+            const time = new Date(s.created_at).toLocaleTimeString();
+            const active = s.id === currentSessionId ? ' ✓' : '';
+            return `<div class="session-item" onclick="attachSession('${s.id}')">
+                <span class="cmd">${s.command}${active}</span>
+                <span class="time">${s.id.slice(0, 8)}... ${time}</span>
+            </div>`;
+        }).join('');
+    }
+
+    function attachSession(sessionId) {
+        document.getElementById('sessions-list').style.display = 'none';
+        if (sessionId === currentSessionId) return;
+        send({ type: 'session.attach', session_id: sessionId });
+    }
+
+    function sendResize() {
+        if (term && currentSessionId && ws && ws.readyState === WebSocket.OPEN) {
+            send({
+                type: 'session.resize',
+                session_id: currentSessionId,
+                cols: term.cols,
+                rows: term.rows,
+            });
+        }
+    }
+
+    function send(msg) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(msg));
+        }
+    }
+
+    function setStatus(state) {
+        const el = document.getElementById('status');
+        el.textContent = state;
+        el.className = 'status ' + state;
+    }
+
+    function showAuthError(msg) {
+        document.getElementById('auth-error').textContent = msg;
+    }
+
+    // Auto-reconnect
+    setInterval(() => {
+        if (ws && ws.readyState === WebSocket.CLOSED && token) {
+            reconnect();
+        }
+    }, 5000);
+
+    // Close sessions list on click outside
+    document.addEventListener('click', (e) => {
+        const list = document.getElementById('sessions-list');
+        if (list.style.display === 'block' && !e.target.closest('#sessions-list') && !e.target.closest('[onclick*="toggleSessions"]')) {
+            list.style.display = 'none';
+        }
+    });
+    </script>
+</body>
+</html>

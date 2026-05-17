@@ -1,0 +1,31 @@
+# Nautilus Configuration
+
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[auth]
+# JWT secret key (use a strong random value in production)
+jwt_secret = "change-me-to-a-secure-random-string"
+# Token expiration in hours
+token_expiry_hours = 24
+
+[sessions]
+# Maximum concurrent sessions per user
+max_sessions_per_user = 5
+# Commands allowed to be spawned (whitelist)
+allowed_commands = ["claude", "codex", "bash", "zsh"]
+# Default terminal size
+default_cols = 120
+default_rows = 40
+# Replay buffer size in bytes (for session reconnection)
+replay_buffer_size = 65536
+
+[rate_limit]
+# Max session creations per minute per user
+max_creates_per_minute = 10
+
+# TLS configuration (optional, uncomment to enable HTTPS/WSS)
+# [tls]
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
