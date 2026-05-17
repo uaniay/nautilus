@@ -11,6 +11,7 @@ pub struct PtyProcess {
     pub input_tx: mpsc::Sender<Vec<u8>>,
     pub output_tx: broadcast::Sender<Vec<u8>>,
     pub resize_tx: mpsc::Sender<(u16, u16)>,
+    pub exit_rx: mpsc::Receiver<i32>,
 }
 
 impl PtyProcess {
@@ -63,14 +64,16 @@ impl PtyProcess {
 
         // Child wait loop
         let output_tx_exit = output_tx.clone();
+        let (exit_tx, exit_rx) = mpsc::channel::<i32>(1);
         tokio::task::spawn_blocking(move || {
-            Self::wait_loop(child, output_tx_exit, &session_id);
+            Self::wait_loop(child, output_tx_exit, &session_id, exit_tx);
         });
 
         Ok(Self {
             input_tx,
             output_tx,
             resize_tx,
+            exit_rx,
         })
     }
 
@@ -134,14 +137,17 @@ impl PtyProcess {
         mut child: Box<dyn portable_pty::Child + Send + Sync>,
         _output_tx: broadcast::Sender<Vec<u8>>,
         session_id: &str,
+        exit_tx: mpsc::Sender<i32>,
     ) {
         match child.wait() {
             Ok(status) => {
                 let code = status.exit_code() as i32;
                 info!(session_id, code, "Process exited");
+                let _ = exit_tx.blocking_send(code);
             }
             Err(e) => {
                 error!(session_id, error = %e, "Failed to wait on child");
+                let _ = exit_tx.blocking_send(-1);
             }
         }
     }

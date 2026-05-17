@@ -66,7 +66,7 @@ impl SessionManager {
         let info = SessionInfo::new(user, command, args, cols, rows);
         let session_id = info.id.clone();
 
-        let process = PtyProcess::spawn(info.clone(), env.clone())?;
+        let mut process = PtyProcess::spawn(info.clone(), env.clone())?;
 
         let handle = Arc::new(SessionHandle {
             info,
@@ -84,6 +84,16 @@ impl SessionManager {
                 if let Ok(mut replay) = handle_clone.replay.lock() {
                     replay.push(&data);
                 }
+            }
+        });
+
+        // Spawn exit cleanup task
+        let sessions_ref = self.sessions.clone();
+        let exit_session_id = session_id.clone();
+        tokio::spawn(async move {
+            if let Some(code) = process.exit_rx.recv().await {
+                info!(session_id = %exit_session_id, code, "Auto-removing exited session");
+                sessions_ref.remove(&exit_session_id);
             }
         });
 
