@@ -1,6 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioFormat {
+    Pcm16,
+    Opus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
     #[serde(rename = "session.create")]
@@ -32,6 +39,21 @@ pub enum ClientMessage {
     },
     #[serde(rename = "fs.list")]
     FsList { path: String },
+    #[serde(rename = "voice.start")]
+    VoiceStart {
+        session_id: String,
+        format: AudioFormat,
+        sample_rate: u32,
+        channels: u8,
+    },
+    #[serde(rename = "voice.data")]
+    VoiceData {
+        session_id: String,
+        data: String,
+        seq: u32,
+    },
+    #[serde(rename = "voice.stop")]
+    VoiceStop { session_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +76,16 @@ pub enum ServerMessage {
     },
     #[serde(rename = "fs.list.error")]
     FsListError { path: String, message: String },
+    #[serde(rename = "voice.transcript")]
+    VoiceTranscript {
+        session_id: String,
+        text: String,
+        is_final: bool,
+    },
+    #[serde(rename = "voice.error")]
+    VoiceError { session_id: String, message: String },
+    #[serde(rename = "voice.status")]
+    VoiceStatus { session_id: String, active: bool },
     #[serde(rename = "error")]
     Error { message: String },
 }

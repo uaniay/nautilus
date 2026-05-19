@@ -48,3 +48,7 @@ url = "2"
 futures-util = "0.3"
 async-trait = "0.1"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+
+# Voice/STT
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+base64 = "0.22"

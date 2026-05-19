@@ -9,8 +9,10 @@ mod protocol;
 mod rate_limit;
 mod server;
 mod session;
+mod stt;
 mod transport;
 mod users;
+mod voice;
 
 use config::Config;
 

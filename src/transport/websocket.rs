@@ -7,14 +7,17 @@ use axum::{
     },
     response::IntoResponse,
 };
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use tokio::sync::Mutex;
-use tracing::info;
+use tokio::sync::{mpsc, Mutex};
+use tracing::{info, warn};
 
 use crate::auth::AuthState;
 use crate::protocol::{ClientMessage, ServerMessage};
 use crate::session::SessionManager;
+use crate::stt::SttProvider;
+use crate::voice::VoiceManager;
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -48,11 +51,88 @@ async fn handle_socket(socket: WebSocket, token: Option<String>, state: AppState
     let user = claims.sub.clone();
     info!(user = %user, "WebSocket client authenticated");
 
+    // Track which sessions already have output forwarding tasks
+    let mut forwarding_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Set up voice manager if STT is configured
+    let voice_mgr = state.stt_provider.as_ref().map(|provider| {
+        let stt_config = state.stt_config.clone().unwrap();
+        VoiceManager::new(provider.clone(), stt_config)
+    });
+    let voice_mgr = Arc::new(tokio::sync::Mutex::new(voice_mgr));
+
+    // Channel for voice transcript events to send back to client
+    let (voice_ws_tx, mut voice_ws_rx) = mpsc::unbounded_channel::<ServerMessage>();
+
+    // Forward voice events to WebSocket
+    let sender_voice = sender.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = voice_ws_rx.recv().await {
+            let json = serde_json::to_string(&msg).unwrap();
+            if sender_voice.lock().await.send(Message::Text(json.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             msg = receiver.next() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
+                        // Try to handle voice messages first
+                        if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
+                            match client_msg {
+                                ClientMessage::VoiceStart { session_id, format, sample_rate, channels } => {
+                                    let mut mgr = voice_mgr.lock().await;
+                                    if let Some(ref mut mgr) = *mgr {
+                                        match mgr.start(
+                                            session_id.clone(),
+                                            format,
+                                            sample_rate,
+                                            channels,
+                                            state.session_mgr.clone(),
+                                            voice_ws_tx.clone(),
+                                        ).await {
+                                            Ok(()) => {
+                                                let resp = ServerMessage::VoiceStatus { session_id, active: true };
+                                                let json = serde_json::to_string(&resp).unwrap();
+                                                let _ = sender.lock().await.send(Message::Text(json.into())).await;
+                                            }
+                                            Err(e) => {
+                                                let resp = ServerMessage::VoiceError { session_id, message: e.to_string() };
+                                                let json = serde_json::to_string(&resp).unwrap();
+                                                let _ = sender.lock().await.send(Message::Text(json.into())).await;
+                                            }
+                                        }
+                                    } else {
+                                        let resp = ServerMessage::VoiceError { session_id, message: "STT not configured".to_string() };
+                                        let json = serde_json::to_string(&resp).unwrap();
+                                        let _ = sender.lock().await.send(Message::Text(json.into())).await;
+                                    }
+                                    continue;
+                                }
+                                ClientMessage::VoiceData { session_id, data, .. } => {
+                                    let mgr = voice_mgr.lock().await;
+                                    if let Some(ref mgr) = *mgr {
+                                        let bytes = base64::engine::general_purpose::STANDARD.decode(&data).unwrap_or_default();
+                                        if let Err(e) = mgr.feed_audio(&session_id, bytes).await {
+                                            warn!(session_id = %session_id, "Voice feed error: {}", e);
+                                        }
+                                    }
+                                    continue;
+                                }
+                                ClientMessage::VoiceStop { session_id } => {
+                                    let mut mgr = voice_mgr.lock().await;
+                                    if let Some(ref mut mgr) = *mgr {
+                                        mgr.stop(&session_id);
+                                    }
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+
                         let (response, new_session_id) = handle_client_message(&text, &claims, &state).await;
                         if let Some(resp) = response {
                             let json = serde_json::to_string(&resp).unwrap();
@@ -62,22 +142,25 @@ async fn handle_socket(socket: WebSocket, token: Option<String>, state: AppState
                         }
                         // Start output forwarding for newly created sessions
                         if let Some(session_id) = new_session_id {
-                            if let Ok(mut rx) = state.session_mgr.subscribe(&session_id) {
-                                let sender_clone = sender.clone();
-                                let sid = session_id.clone();
-                                tokio::spawn(async move {
-                                    while let Ok(data) = rx.recv().await {
-                                        let text = String::from_utf8_lossy(&data).to_string();
-                                        let msg = ServerMessage::Output {
-                                            session_id: sid.clone(),
-                                            data: text,
-                                        };
-                                        let json = serde_json::to_string(&msg).unwrap();
-                                        if sender_clone.lock().await.send(Message::Text(json.into())).await.is_err() {
-                                            break;
+                            if !forwarding_sessions.contains(&session_id) {
+                                if let Ok(mut rx) = state.session_mgr.subscribe(&session_id) {
+                                    forwarding_sessions.insert(session_id.clone());
+                                    let sender_clone = sender.clone();
+                                    let sid = session_id.clone();
+                                    tokio::spawn(async move {
+                                        while let Ok(data) = rx.recv().await {
+                                            let text = String::from_utf8_lossy(&data).to_string();
+                                            let msg = ServerMessage::Output {
+                                                session_id: sid.clone(),
+                                                data: text,
+                                            };
+                                            let json = serde_json::to_string(&msg).unwrap();
+                                            if sender_clone.lock().await.send(Message::Text(json.into())).await.is_err() {
+                                                break;
+                                            }
                                         }
-                                    }
-                                });
+                                    });
+                                }
                             }
                         }
                     }
@@ -86,6 +169,12 @@ async fn handle_socket(socket: WebSocket, token: Option<String>, state: AppState
                 }
             }
         }
+    }
+
+    // Cleanup voice sessions on disconnect
+    let mut mgr = voice_mgr.lock().await;
+    if let Some(ref mut mgr) = *mgr {
+        mgr.cleanup();
     }
 }
 
@@ -263,6 +352,9 @@ async fn handle_client_message(
                 ),
             }
         }
+        ClientMessage::VoiceStart { .. } | ClientMessage::VoiceData { .. } | ClientMessage::VoiceStop { .. } => {
+            (None, None)
+        }
     }
 }
 
@@ -272,4 +364,6 @@ pub struct AppState {
     pub session_mgr: SessionManager,
     pub sessions_config: crate::config::SessionsConfig,
     pub user_store: crate::users::SharedUserStore,
+    pub stt_provider: Option<Arc<dyn SttProvider>>,
+    pub stt_config: Option<crate::config::SttConfig>,
 }

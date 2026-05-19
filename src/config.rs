@@ -9,6 +9,7 @@ pub struct Config {
     pub sessions: SessionsConfig,
     pub rate_limit: RateLimitConfig,
     pub tls: Option<TlsConfig>,
+    pub stt: Option<SttConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -52,6 +53,17 @@ fn default_replay_buffer_size() -> usize {
 #[derive(Debug, Clone, Deserialize)]
 pub struct RateLimitConfig {
     pub max_creates_per_minute: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SttConfig {
+    pub provider: String,
+    pub api_key: String,
+    pub model: Option<String>,
+    pub language: Option<String>,
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub auto_submit: bool,
 }
 
 impl Config {

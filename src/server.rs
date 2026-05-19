@@ -18,6 +18,7 @@ use crate::auth::AuthState;
 use crate::config::Config;
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionManager;
+use crate::stt::{SttProvider, deepgram::DeepgramProvider};
 use crate::transport::socketio::{self, SioState};
 use crate::transport::websocket::{self, AppState};
 use crate::users::UserStore;
@@ -28,11 +29,24 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let session_mgr = SessionManager::new(config.sessions.clone(), rate_limiter);
     let user_store = Arc::new(Mutex::new(UserStore::open(&config.auth.db_path)?));
 
+    let stt_provider: Option<Arc<dyn SttProvider>> = config.stt.as_ref().map(|stt_config| {
+        let provider: Arc<dyn SttProvider> = match stt_config.provider.as_str() {
+            "deepgram" => Arc::new(DeepgramProvider::new(stt_config)),
+            other => {
+                panic!("Unknown STT provider: '{}'. Supported: deepgram", other);
+            }
+        };
+        info!(provider = %stt_config.provider, "STT provider configured");
+        provider
+    });
+
     let app_state = AppState {
         auth: auth.clone(),
         session_mgr: session_mgr.clone(),
         sessions_config: config.sessions.clone(),
         user_store: user_store.clone(),
+        stt_provider,
+        stt_config: config.stt.clone(),
     };
 
     let sio_state = SioState {

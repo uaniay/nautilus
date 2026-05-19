@@ -1,2 +1,2 @@
 pub mod messages;
-pub use messages::{ClientMessage, ServerMessage};
+pub use messages::{AudioFormat, ClientMessage, ServerMessage};

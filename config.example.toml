@@ -31,3 +31,12 @@ max_creates_per_minute = 10
 # [tls]
 # cert_path = "/path/to/cert.pem"
 # key_path = "/path/to/key.pem"
+
+# STT (Speech-to-Text) configuration (optional, uncomment to enable voice input)
+# [stt]
+# provider = "deepgram"           # "deepgram" | "openai_whisper"
+# api_key = "your-api-key-here"
+# model = "nova-2"                # provider-specific model name
+# language = "zh"                 # default language for recognition
+# auto_submit = true              # append newline after final transcript (executes command)
+# endpoint = ""                   # override default provider URL (optional)
