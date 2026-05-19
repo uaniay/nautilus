@@ -10,6 +10,7 @@ mod rate_limit;
 mod server;
 mod session;
 mod transport;
+mod users;
 
 use config::Config;
 
@@ -39,6 +40,15 @@ enum Commands {
         #[arg(short, long)]
         expiry: Option<u64>,
     },
+    /// Add a user to the database
+    AddUser {
+        #[arg(short, long)]
+        user: String,
+        #[arg(short, long)]
+        password: String,
+        #[arg(short, long, default_value = "admin")]
+        role: String,
+    },
 }
 
 #[tokio::main]
@@ -56,6 +66,16 @@ async fn main() -> anyhow::Result<()> {
                 &config.auth.jwt_secret,
             )?;
             println!("{}", token);
+            Ok(())
+        }
+        Some(Commands::AddUser {
+            user,
+            password,
+            role,
+        }) => {
+            let store = users::UserStore::open(&config.auth.db_path)?;
+            store.create_user(&user, &password, &role)?;
+            println!("User '{}' created with role '{}'", user, role);
             Ok(())
         }
         Some(Commands::Serve { port }) => {

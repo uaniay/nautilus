@@ -27,6 +27,12 @@ pub struct TlsConfig {
 pub struct AuthConfig {
     pub jwt_secret: String,
     pub token_expiry_hours: u64,
+    #[serde(default = "default_db_path")]
+    pub db_path: String,
+}
+
+fn default_db_path() -> String {
+    "nautilus.db".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]

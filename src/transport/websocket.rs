@@ -229,6 +229,40 @@ async fn handle_client_message(
             }
             (None, None)
         }
+        ClientMessage::FsList { path } => {
+            let resolved = if path == "~" {
+                std::env::var("HOME").unwrap_or_else(|_| "/".to_string())
+            } else if path.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+                format!("{}/{}", home, &path[2..])
+            } else {
+                path.clone()
+            };
+            match std::fs::read_dir(&resolved) {
+                Ok(entries) => {
+                    let items: Vec<crate::protocol::messages::FsEntry> = entries
+                        .filter_map(|e| e.ok())
+                        .map(|e| {
+                            let meta = e.metadata().ok();
+                            let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                            crate::protocol::messages::FsEntry {
+                                name: e.file_name().to_string_lossy().to_string(),
+                                entry_type: if is_dir { "directory".to_string() } else { "file".to_string() },
+                                size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+                            }
+                        })
+                        .collect();
+                    (Some(ServerMessage::FsList { path: resolved.clone(), entries: items }), None)
+                }
+                Err(e) => (
+                    Some(ServerMessage::FsListError {
+                        path: resolved,
+                        message: e.to_string(),
+                    }),
+                    None,
+                ),
+            }
+        }
     }
 }
 
@@ -237,4 +271,5 @@ pub struct AppState {
     pub auth: AuthState,
     pub session_mgr: SessionManager,
     pub sessions_config: crate::config::SessionsConfig,
+    pub user_store: crate::users::SharedUserStore,
 }

@@ -9,6 +9,8 @@ port = 8080
 jwt_secret = "change-me-to-a-secure-random-string"
 # Token expiration in hours
 token_expiry_hours = 24
+# SQLite database path for user accounts
+db_path = "nautilus.db"
 
 [sessions]
 # Maximum concurrent sessions per user

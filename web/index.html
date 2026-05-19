@@ -29,6 +29,15 @@
         }
         #auth-panel button:hover { background: #00f5c4; }
         #auth-error { color: #ff6b6b; font-size: 13px; min-height: 20px; }
+        .auth-tabs { display: flex; gap: 0; margin-bottom: 16px; }
+        .auth-tabs button {
+            padding: 8px 20px; border: 1px solid #333; background: transparent;
+            color: #888; font-size: 13px; cursor: pointer; transition: all 0.2s;
+        }
+        .auth-tabs button:first-child { border-radius: 8px 0 0 8px; }
+        .auth-tabs button:last-child { border-radius: 0 8px 8px 0; }
+        .auth-tabs button.active { background: #00d4aa; color: #1a1a2e; border-color: #00d4aa; font-weight: 600; }
+        .auth-form { display: flex; flex-direction: column; gap: 12px; align-items: center; }
 
         /* Terminal Panel */
         #terminal-panel { display: none; flex-direction: column; height: 100vh; }
@@ -74,8 +83,19 @@
     <div id="auth-panel">
         <h1>Nautilus</h1>
         <p>Remote CLI Terminal</p>
-        <input type="password" id="token-input" placeholder="Enter JWT token..." autofocus>
-        <button id="connect-btn" onclick="connect()">Connect</button>
+        <div class="auth-tabs">
+            <button class="active" onclick="switchAuthTab('login')">Login</button>
+            <button onclick="switchAuthTab('token')">Token</button>
+        </div>
+        <div id="login-form" class="auth-form">
+            <input type="text" id="username-input" placeholder="Username" autofocus>
+            <input type="password" id="password-input" placeholder="Password">
+            <button onclick="loginWithPassword()">Login</button>
+        </div>
+        <div id="token-form" class="auth-form" style="display:none;">
+            <input type="password" id="token-input" placeholder="Enter JWT token...">
+            <button onclick="connect()">Connect</button>
+        </div>
         <div id="auth-error"></div>
     </div>
 
@@ -113,13 +133,53 @@
         if (e.key === 'Enter') connect();
     });
 
-    function connect() {
-        token = document.getElementById('token-input').value.trim();
-        if (!token) {
-            showAuthError('Please enter a token');
+    // Enter key on password input
+    document.getElementById('password-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') loginWithPassword();
+    });
+
+    function switchAuthTab(tab) {
+        const tabs = document.querySelectorAll('.auth-tabs button');
+        tabs.forEach(t => t.classList.remove('active'));
+        if (tab === 'login') {
+            tabs[0].classList.add('active');
+            document.getElementById('login-form').style.display = 'flex';
+            document.getElementById('token-form').style.display = 'none';
+        } else {
+            tabs[1].classList.add('active');
+            document.getElementById('login-form').style.display = 'none';
+            document.getElementById('token-form').style.display = 'flex';
+        }
+        showAuthError('');
+    }
+
+    async function loginWithPassword() {
+        const username = document.getElementById('username-input').value.trim();
+        const password = document.getElementById('password-input').value;
+        if (!username || !password) {
+            showAuthError('Please enter username and password');
             return;
         }
+        try {
+            const resp = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                showAuthError(data.error || 'Login failed');
+                return;
+            }
+            const data = await resp.json();
+            token = data.token;
+            connectWithToken();
+        } catch (e) {
+            showAuthError('Network error');
+        }
+    }
 
+    function connectWithToken() {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const url = `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
 
@@ -151,8 +211,17 @@
         };
 
         ws.onerror = () => {
-            showAuthError('Connection failed — check your token');
+            showAuthError('Connection failed — check your credentials');
         };
+    }
+
+    function connect() {
+        token = document.getElementById('token-input').value.trim();
+        if (!token) {
+            showAuthError('Please enter a token');
+            return;
+        }
+        connectWithToken();
     }
 
     function reconnect() {

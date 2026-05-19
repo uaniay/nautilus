@@ -1,29 +1,38 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::{
+    extract::State as AxumState,
+    http::StatusCode,
     response::{Html, IntoResponse},
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
+use serde::Deserialize;
+use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
+use crate::auth::claims::Claims;
 use crate::auth::AuthState;
 use crate::config::Config;
 use crate::rate_limit::RateLimiter;
 use crate::session::SessionManager;
 use crate::transport::socketio::{self, SioState};
 use crate::transport::websocket::{self, AppState};
+use crate::users::UserStore;
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let auth = AuthState::new(config.auth.clone());
     let rate_limiter = RateLimiter::new(config.rate_limit.max_creates_per_minute);
     let session_mgr = SessionManager::new(config.sessions.clone(), rate_limiter);
+    let user_store = Arc::new(Mutex::new(UserStore::open(&config.auth.db_path)?));
 
     let app_state = AppState {
         auth: auth.clone(),
         session_mgr: session_mgr.clone(),
         sessions_config: config.sessions.clone(),
+        user_store: user_store.clone(),
     };
 
     let sio_state = SioState {
@@ -38,6 +47,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         .route("/", get(index_html))
         .route("/ws", get(websocket::ws_handler))
         .route("/health", get(health))
+        .route("/api/login", post(login_handler))
         .layer(sio_layer)
         .layer(CorsLayer::permissive())
         .with_state(app_state);
@@ -65,6 +75,40 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
     info!("Server shut down");
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+async fn login_handler(
+    AxumState(state): AxumState<AppState>,
+    Json(req): Json<LoginRequest>,
+) -> impl IntoResponse {
+    let store = state.user_store.lock().await;
+    match store.verify(&req.username, &req.password) {
+        Some((username, role)) => {
+            drop(store);
+            match Claims::encode(
+                &username,
+                &role,
+                state.auth.config.token_expiry_hours,
+                &state.auth.config.jwt_secret,
+            ) {
+                Ok(token) => {
+                    (StatusCode::OK, Json(serde_json::json!({ "token": token }))).into_response()
+                }
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "Invalid username or password" })),
+        )
+            .into_response(),
+    }
 }
 
 async fn health() -> &'static str {

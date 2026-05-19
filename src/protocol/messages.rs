@@ -30,6 +30,8 @@ pub enum ClientMessage {
         session_id: String,
         signal: Option<String>,
     },
+    #[serde(rename = "fs.list")]
+    FsList { path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,8 +47,23 @@ pub enum ServerMessage {
     Output { session_id: String, data: String },
     #[serde(rename = "session.exit")]
     Exit { session_id: String, code: i32 },
+    #[serde(rename = "fs.list")]
+    FsList {
+        path: String,
+        entries: Vec<FsEntry>,
+    },
+    #[serde(rename = "fs.list.error")]
+    FsListError { path: String, message: String },
     #[serde(rename = "error")]
     Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsEntry {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
