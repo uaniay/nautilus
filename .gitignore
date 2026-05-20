@@ -1,3 +1,10 @@
 /target
 config.toml
 *.pem
+*.db
+
+# Claude Code
+.claude/
+
+# GSD planning
+.planning/
